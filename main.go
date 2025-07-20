@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+func getTTYSize() (int64, int64, error) {
+	return 142, 34 - 1, nil
+}
+
 type Row struct {
 	Timestamp float64
 	Value     float64
@@ -77,16 +81,17 @@ type PromResponse struct {
 
 func main() {
 	prom_endpoint := os.Getenv("PROM_ENDPOINT")
-	if len(prom_endpoint) == 0 {
-		panic("PROM_ENDPOINT env var not defined")
-	}
 
 	if len(os.Args) < 2 {
 		panic("No query provided")
 	}
 
-	prom_query := os.Args[1]
+	width, _, err := getTTYSize()
+	if err != nil {
+		panic(err.Error())
+	}
 
+	prom_query := os.Args[1]
 	fmt.Printf("Query is %s\n", prom_query)
 
 	duration, err := time.ParseDuration("-1h")
@@ -94,10 +99,20 @@ func main() {
 		panic("Error parsing duration")
 	}
 
-	startTimestamp := time.Now().Add(duration).Unix()
-	endTimestamp := time.Now().Unix()
-	step := "1m"
-	request_uri := fmt.Sprintf("%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%s", prom_endpoint, prom_query, startTimestamp, endTimestamp, step)
+	startTimestamp := time.Now().Add(duration)
+	endTimestamp := time.Now()
+	// TODO: step logic is flawed have to fix later
+	step := (endTimestamp.Unix() - startTimestamp.Unix()) / width
+	step += 1
+
+	request_uri := fmt.Sprintf(
+		"%s/api/v1/query_range?query=%s&start=%d&end=%d&step=%d",
+		prom_endpoint,
+		prom_query,
+		startTimestamp.Unix(),
+		endTimestamp.Unix(),
+		step,
+	)
 
 	resp, err := http.Get(request_uri)
 	if err != nil {
@@ -110,6 +125,7 @@ func main() {
 	if err != nil {
 		panic("Cant read response body")
 	}
+
 	var promResponse PromResponse
 	err = json.Unmarshal(bodyBytes, &promResponse)
 	if err != nil {
@@ -117,8 +133,12 @@ func main() {
 		panic("Couldnt decode response body")
 	}
 
-	fmt.Printf("Response Status %s\n", promResponse.Status)
-	fmt.Printf("Response Res type %s\n", promResponse.Data.ResultType)
-	fmt.Printf("Value %f\n", promResponse.Data.Result[0].Values[0].Value)
-	fmt.Printf("Timestamp %f\n", promResponse.Data.Result[0].Values[0].Timestamp)
+	if promResponse.Status != "success" {
+		fmt.Println("Prom request failed")
+		return
+	}
+	if promResponse.Data.ResultType != "matrix" {
+		fmt.Println("Unrecognized result type" + promResponse.Data.ResultType)
+		return
+	}
 }
